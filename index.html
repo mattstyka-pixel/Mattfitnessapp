@@ -496,13 +496,14 @@ async function usdaGet(path, params) {
   const r = await fetch(USDA + path + '?' + qs.toString());
   if (r.status === 401 || r.status === 403) throw new Error('key');
   if (r.status === 429) throw new Error('limit');
-  if (!r.ok) throw new Error('http');
+  if (!r.ok) throw new Error('http:' + r.status);
   return r.json();
 }
 function errText(e) {
   if (e.message === 'key') return 'USDA didn’t accept the API key. Check it in Settings.';
   if (e.message === 'limit') return 'You’ve hit USDA’s hourly search limit. Recent and Favorites still work.';
-  return 'Couldn’t reach the food database. Check your connection and try again.';
+  if (String(e.message).startsWith('http:')) return 'The food database returned an error (code ' + e.message.slice(5) + '). Try again in a moment.';
+  return 'Couldn’t reach the food database (no response). Check your connection and try again.';
 }
 let searchSeq = 0, searchTimer = null;
 async function runSearch(q) {
@@ -514,13 +515,22 @@ async function runSearch(q) {
   S.pick = null;
   S.search.status = 'loading'; S.search.msg = ''; renderResults();
   try {
-    const [g, b] = await Promise.all([
-      usdaGet('/foods/search', { query: q, dataType: 'Survey (FNDDS),SR Legacy,Foundation', pageSize: '15' }),
-      usdaGet('/foods/search', { query: q, dataType: 'Branded', pageSize: '10' })
-    ]);
+    let gen, brand;
+    try {
+      const [g, b] = await Promise.all([
+        usdaGet('/foods/search', { query: q, dataType: 'Survey (FNDDS),SR Legacy,Foundation', pageSize: '15' }),
+        usdaGet('/foods/search', { query: q, dataType: 'Branded', pageSize: '10' })
+      ]);
+      gen = g.foods || []; brand = b.foods || [];
+    } catch (e) {
+      if (e.message === 'key' || e.message === 'limit') throw e;
+      // Fallback: one plain search, split into everyday foods and brands here
+      const all = (await usdaGet('/foods/search', { query: q, pageSize: '40' })).foods || [];
+      gen = all.filter((f) => f.dataType !== 'Branded'); brand = all.filter((f) => f.dataType === 'Branded').slice(0, 12);
+    }
     if (seq !== searchSeq) return;
-    S.search.generic = (g.foods || []).map(parseUsda).filter(Boolean);
-    S.search.branded = (b.foods || []).map(parseUsda).filter(Boolean);
+    S.search.generic = gen.map(parseUsda).filter(Boolean);
+    S.search.branded = brand.map(parseUsda).filter(Boolean);
     S.search.status = 'done';
   } catch (e) {
     if (seq !== searchSeq) return;
